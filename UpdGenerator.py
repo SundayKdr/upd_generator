@@ -24,7 +24,8 @@ class ProductTable:
             table_tag.append(self.makeProductTag(elem, count))
             total_no_vat += elem["sums"]["sum"]
             total_sum += elem["sums"]["total_sum"]
-            total_tax += elem["sums"]["tax_sum"]
+            if elem["taxes"]:
+                total_tax += elem["sums"]["tax_sum"]
 
         total_tag = self.soup.new_tag(name="ВсегоОпл")
         total_tag.attrs = {
@@ -216,7 +217,10 @@ class InvoiceDetails:
 class IdentificationInformation:
     def __init__(self, data):
         self.tagName = "ИдСв"
-        self.entity_info = LegalEntityInfo(data)
+        if "ИП" in data["НаимОрг"]:
+            self.entity_info = IPEntityInfo(data)
+        else:
+            self.entity_info = LegalEntityInfo(data)
 
     def makeTag(self):
         soup = BeautifulSoup(features="xml")
@@ -235,6 +239,37 @@ class LegalEntityInfo:
     def makeTag(self):
         soup = BeautifulSoup(features="xml")
         return soup.new_tag(name=self.main_tag, attrs=self.main_tag_attr)
+
+
+class IPEntityInfo:
+    def __init__(self, data):
+        self.main_tag = "СвИП"
+        self.main_tag_attr = {"ИННФЛ": data["ИНН"]}
+        self.FIO = self.FIO(data)
+
+    def makeTag(self):
+        soup = BeautifulSoup(features="xml")
+        tag = soup.new_tag(name=self.main_tag, attrs=self.main_tag_attr)
+        tag.append(self.FIO.makeTag())
+        return tag
+
+    class FIO:
+        def __init__(self, data):
+            try:
+                self.main_tag = "ФИО"
+                fio = data["НаимОрг"].split(" ")
+                self.main_tag_attr = {"Фамилия": fio[1],
+                                      "Имя": fio[2],
+                                      "Отчество": fio[3]}
+            except:
+                msg = f"Некорректный атрибут ФИО для ИП"
+                print(msg)
+                raise Exception(msg)
+
+        def makeTag(self):
+            soup = BeautifulSoup(features="xml")
+            tag = soup.new_tag(name=self.main_tag, attrs=self.main_tag_attr)
+            return tag
 
 
 class Addr:
@@ -339,13 +374,22 @@ class Product:
         self.cost = main_tag["Цена"]
         self.sum = float(main_tag["Сумма"])
 
-        tax_tag = main_tag.findNext("СуммаНалога")
-        self.tax_percent = tax_tag["Ставка"] + "%"
-        self.tax_sum = float(tax_tag["Сумма"])
-        self.total_sum = float(self.sum) + float(self.tax_sum)
+        self.tax_tag = main_tag.findNext("СуммаНалога")
+        if self.tax_tag:
+            self.tax_percent = self.tax_tag["Ставка"] + "%"
+            self.tax_sum = float(self.tax_tag["Сумма"])
+            if self.tax_tag.has_attr("ВключенВСумму"):
+                self.total_sum = float(self.sum)
+            else:
+                self.total_sum = float(self.sum) + float(self.tax_sum)
+
+        else:
+            self.tax_percent = "без НДС"
+            self.tax_sum = "без НДС"
+            self.total_sum = float(self.sum)
 
     def prepare_json_data(self):
-        return {"СведТов": {"НомСтр": "",
+        data = {"СведТов": {"НомСтр": "",
                             "НаимТов": self.product_name,
                             "ОКЕИ_Тов": self.unit_code,
                             "КолТов": self.qty,
@@ -358,10 +402,12 @@ class Product:
                 "Акциз": {"БезАкциз": "без акциза"},
                 "ДопСведТов": {"НаимЕдИзм": self.unit,
                                "КодТов": self.product_id},
+                "taxes": 1 if self.tax_tag else 0,
                 "sums": {"sum": self.sum,
                          "total_sum": self.total_sum,
                          "tax_sum": self.tax_sum}
                 }
+        return data
 
     def prepare_new_tag(self, string_num):
         soup = BeautifulSoup(features="xml")
